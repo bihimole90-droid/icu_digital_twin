@@ -411,7 +411,7 @@ function LandingPage({ onStart }) {
               <TerminalSquare className="w-3 h-3 mr-2" /> ICU Digital Twin Core
             </motion.div>
             <motion.h1 variants={fadeUp} className="mt-8 text-balance font-display text-5xl font-bold uppercase tracking-tight text-white sm:text-6xl lg:text-7xl glow-text-cyan">
-              Vector Infection <br /><span className="text-neon-pink glow-text-pink">Dynamic Twin</span>
+              Sentinel: <br /><span className="text-neon-pink glow-text-pink">ICU Outbreak Monitor</span>
             </motion.h1>
 
             <motion.div variants={fadeUp} className="mt-8 max-w-xl rounded-[1.8rem] border border-neon-cyan/20 bg-core-900/60 p-8 backdrop-blur-xl shadow-glass">
