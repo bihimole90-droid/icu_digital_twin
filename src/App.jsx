@@ -91,11 +91,20 @@ function App() {
   const [started, setStarted] = useState(false);
   const [activeView, setActiveView] = useState("overview");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [patients, setPatients] = useState([]);
-  const [stats, setStats] = useState(null);
+  const [livePatients, setLivePatients] = useState([]);
+  const [liveStats, setLiveStats] = useState(null);
+  const [liveNetworkData, setLiveNetworkData] = useState(null);
+  const [simulationHistory, setSimulationHistory] = useState([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const [sitrepLog, setSitrepLog] = useState(["[SYSTEM] Matrix initialized. Awaiting simulation cycles."]);
+
+  const patients = historyIndex >= 0 && simulationHistory[historyIndex] ? simulationHistory[historyIndex].patients : livePatients;
+  const stats = historyIndex >= 0 && simulationHistory[historyIndex] ? simulationHistory[historyIndex].stats : liveStats;
+  const networkData = historyIndex >= 0 && simulationHistory[historyIndex] ? simulationHistory[historyIndex].networkData : liveNetworkData;
+  const isHistorical = historyIndex >= 0;
+
   const [selectedPatientId, setSelectedPatientId] = useState(null);
   const [selectedPatientRecommendation, setSelectedPatientRecommendation] = useState(null);
-  const [networkData, setNetworkData] = useState(null);
   const [simulationMessage, setSimulationMessage] = useState("");
   const [baselineSnapshot, setBaselineSnapshot] = useState(null);
   const [selectedDossierPatient, setSelectedDossierPatient] = useState(null);
@@ -105,6 +114,15 @@ function App() {
     recommendation: false,
   });
   const [error, setError] = useState("");
+
+  const handleManualOverride = (id) => {
+    if (isHistorical) return; 
+    setLivePatients(prev => prev.map(p => 
+      p.id === id ? { ...p, status: 'STABLE', infected: 0, override: true } : p
+    ));
+    setSitrepLog(prev => [`[OVERRIDE] Entity ${id} forcefully stabilized via Triage Override protocol.`, ...prev].slice(0, 50));
+    setSelectedDossierPatient(prev => prev && prev.id === id ? { ...prev, status: 'STABLE', infected: 0 } : prev);
+  };
 
   const selectedPatient = useMemo(
     () => patients.find((patient) => patient.id === selectedPatientId) ?? null,
@@ -136,19 +154,23 @@ function App() {
       const [patientPayload, statsPayload] = await Promise.all([getPatients(), getStats()]);
       const patientList = normalizePatients(patientPayload);
 
-      setPatients(patientList);
-      setStats(statsPayload ?? null);
+      setLivePatients(patientList);
+      setLiveStats(statsPayload ?? null);
       setSelectedPatientId((current) => {
-        if (current && patientList.some((patient) => patient.id === current)) return current;
+        if (current && patientList.some((pat) => pat.id === current)) return current;
         return patientList[0]?.id ?? null;
       });
 
+      let netGraph = null;
       try {
         const graph = await getNetwork();
-        setNetworkData(normalizeNetwork(graph, patientList));
+        netGraph = normalizeNetwork(graph, patientList);
+        setLiveNetworkData(netGraph);
       } catch {
-        setNetworkData(buildFallbackNetwork(patientList));
+        netGraph = buildFallbackNetwork(patientList);
+        setLiveNetworkData(netGraph);
       }
+      return { patientList, statsPayload, netGraph };
     } catch {
       setError("Unable to connect to the ICU backend. Check that VITE_API_BASE points to the deployed API.");
     } finally {
@@ -157,12 +179,37 @@ function App() {
   }
 
   async function runSimulation() {
-    setBaselineSnapshot({ patients: [...patients], summary: { ...summary } });
+    if (isHistorical) return;
+    setBaselineSnapshot({ patients: [...livePatients], summary: { ...summary } });
+    
+    const historicalFrame = {
+        patients: [...livePatients],
+        stats: liveStats ? JSON.parse(JSON.stringify(liveStats)) : null,
+        networkData: liveNetworkData ? JSON.parse(JSON.stringify(liveNetworkData)) : null,
+        timestamp: new Date().toLocaleTimeString()
+    };
+
     setLoading((current) => ({ ...current, simulation: true }));
     try {
       const result = await triggerSimulation();
       setSimulationMessage(result?.message ?? "Simulation step completed");
-      await loadDashboardData();
+      
+      const newData = await loadDashboardData();
+      if (!newData) return;
+      
+      setSimulationHistory(prev => [...prev, historicalFrame]);
+      
+      const prevInfected = historicalFrame.patients.filter(p=>p.infected===1).length;
+      const newInfectedCount = newData.patientList.filter(p=>p.infected===1).length;
+      const infectedDelta = newInfectedCount - prevInfected;
+      
+      let msg = "";
+      if (infectedDelta > 0) msg = `[ALERT] Contagion spread. ${infectedDelta} new infections detected.`;
+      else if (infectedDelta < 0) msg = `[RECOVERY] Protocol effective. ${Math.abs(infectedDelta)} entities stabilized.`;
+      else msg = `[STATUS] Containment holding at current baseline.`;
+      
+      setSitrepLog(prev => [msg, ...prev].slice(0, 50));
+
     } finally {
       setLoading((current) => ({ ...current, simulation: false }));
     }
@@ -227,6 +274,8 @@ function App() {
             key="dossier-modal"
             patient={selectedDossierPatient}
             onClose={() => setSelectedDossierPatient(null)}
+            onManualOverride={handleManualOverride}
+            isHistorical={isHistorical}
           />
         )}
       </AnimatePresence>
@@ -244,6 +293,12 @@ function App() {
             onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
             sidebarCollapsed={sidebarCollapsed}
             simulationMessage={simulationMessage}
+            onManualOverride={handleManualOverride}
+            sitrepLog={sitrepLog}
+            simulationHistory={simulationHistory}
+            historyIndex={historyIndex}
+            setHistoryIndex={setHistoryIndex}
+            isHistorical={isHistorical}
           >
             <AnimatePresence mode="wait">
               {activeView === "overview" && (
@@ -255,6 +310,7 @@ function App() {
                   summary={summary}
                   onPatientSelect={setSelectedPatientId}
                   onInspect={setSelectedDossierPatient}
+                  sitrepLog={sitrepLog}
                 />
               )}
               {activeView === "simulation" && (
@@ -517,6 +573,10 @@ function DashboardShell({
   onToggleSidebar,
   sidebarCollapsed,
   simulationMessage,
+  simulationHistory,
+  historyIndex,
+  setHistoryIndex,
+  isHistorical
 }) {
   return (
     <motion.div
@@ -619,16 +679,43 @@ function DashboardShell({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -20 }}
             transition={{ duration: 0.4 }}
+            className="pb-24"
           >
             {children}
           </motion.div>
         </div>
       </main>
+
+      {simulationHistory && simulationHistory.length > 0 && (
+        <div className="fixed bottom-0 inset-x-0 lg:pl-10 p-4 z-50 bg-gradient-to-t from-core-950 via-core-950/90 to-transparent pointer-events-none">
+          <div className="max-w-4xl mx-auto flex flex-col md:flex-row items-center gap-4 bg-core-950/90 border border-neon-cyan/40 p-4 rounded-xl backdrop-blur-md pointer-events-auto shadow-[0_0_20px_rgba(0,240,255,0.15)] flex-1 w-full">
+            <div className="text-neon-cyan/70 font-tech uppercase text-xs tracking-widest min-w-max flex flex-col items-center">
+              <span>Time Delta</span>
+              <span className="text-white font-bold glow-text-cyan mt-1">{historyIndex === -1 ? 'LIVE' : `T-${simulationHistory.length - historyIndex}`}</span>
+            </div>
+            <input 
+              type="range" 
+              className="w-full h-1 bg-neon-cyan/20 rounded-lg appearance-none cursor-pointer accent-neon-cyan hover:accent-white transition"
+              min={0}
+              max={simulationHistory.length}
+              value={historyIndex === -1 ? simulationHistory.length : historyIndex}
+              onChange={(e) => {
+                const val = parseInt(e.target.value);
+                if (val === simulationHistory.length) setHistoryIndex(-1);
+                else setHistoryIndex(val);
+              }}
+            />
+            <div className="text-neon-pink/70 font-tech uppercase text-xs tracking-widest min-w-max text-right">
+              {isHistorical ? <span className="animate-pulse text-neon-pink glow-text-pink font-bold">HISTORICAL</span> : <span className="text-neon-cyan glow-text-cyan font-bold">LIVE SYNC</span>}
+            </div>
+          </div>
+        </div>
+      )}
     </motion.div>
   );
 }
 
-function OverviewView({ chartData, patients, selectedPatientId, summary, onPatientSelect, onInspect }) {
+function OverviewView({ chartData, patients, selectedPatientId, summary, onPatientSelect, onInspect, sitrepLog }) {
   return (
     <motion.section variants={staggerContainer} initial="hidden" animate="visible" className="space-y-8">
       <div className="grid gap-6 xl:grid-cols-[repeat(3,minmax(0,1fr))_1.1fr]">
@@ -655,17 +742,43 @@ function OverviewView({ chartData, patients, selectedPatientId, summary, onPatie
         </motion.div>
       </div>
 
-      <motion.div variants={fadeUp} className="glass-panel rounded-2xl p-6 border-neon-cyan/20">
-        <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between border-b border-neon-cyan/10 pb-4">
-          <div>
-            <h2 className="font-display text-2xl font-bold text-white tracking-wider glow-text-cyan">Entity Database</h2>
+      <div className="grid gap-6 lg:grid-cols-[350px,1fr]">
+        <motion.div variants={fadeUp} className="glass-panel rounded-2xl p-6 border-neon-cyan/20 h-full flex flex-col">
+          <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between border-b border-neon-cyan/10 pb-4">
+            <div>
+              <h2 className="font-display text-2xl font-bold text-white tracking-wider glow-text-cyan flex items-center gap-2">
+                <TerminalSquare className="w-5 h-5 text-neon-cyan" /> SITREP Console
+              </h2>
+            </div>
+            <div className="rounded border border-neon-cyan/30 bg-neon-cyan/5 px-4 py-2 text-[10px] font-tech uppercase text-neon-cyan tracking-widest animate-pulse">
+              LIVE NARRATIVE FEED
+            </div>
           </div>
-          <div className="rounded border border-neon-pink/30 bg-neon-pink/5 px-4 py-2 text-xs font-tech uppercase text-slate-300">
-            Patient ID Focus: <span className="font-bold text-neon-pink glow-text-pink">{selectedPatientId ?? "NULL"}</span>
+          <div className="flex-1 bg-[#050914] rounded-xl border border-neon-cyan/10 p-4 overflow-y-auto scrollbar-thin shadow-inner font-tech text-xs tracking-widest leading-6 max-h-80">
+            {sitrepLog && sitrepLog.length > 0 ? (
+              sitrepLog.map((log, i) => (
+                <div key={i} className={`mb-3 pb-3 border-b border-white/5 ${log.includes('[ALERT]') ? 'text-neon-pink' : log.includes('[RECOVERY]') ? 'text-neon-cyan' : log.includes('[OVERRIDE]') ? 'text-neon-amber' : 'text-slate-400'}`}>
+                  <span className="opacity-50 mr-2">[{new Date().toLocaleTimeString()}]</span> {log}
+                </div>
+              ))
+            ) : (
+              <div className="text-slate-500 italic">SYSTEM INITIALIZED. WAITING FOR PATTERN DEVIATION...</div>
+            )}
           </div>
-        </div>
-        <PatientGrid patients={patients} selectedPatientId={selectedPatientId} onPatientSelect={onPatientSelect} onInspect={onInspect} />
-      </motion.div>
+        </motion.div>
+
+        <motion.div variants={fadeUp} className="glass-panel rounded-2xl p-6 border-neon-cyan/20 h-full">
+          <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between border-b border-neon-cyan/10 pb-4">
+            <div>
+              <h2 className="font-display text-2xl font-bold text-white tracking-wider glow-text-cyan">Entity Database</h2>
+            </div>
+            <div className="rounded border border-neon-pink/30 bg-neon-pink/5 px-4 py-2 text-xs font-tech uppercase text-slate-300">
+              Focus: <span className="font-bold text-neon-pink glow-text-pink">{selectedPatientId ?? "NULL"}</span>
+            </div>
+          </div>
+          <PatientGrid patients={patients} selectedPatientId={selectedPatientId} onPatientSelect={onPatientSelect} onInspect={onInspect} columns="grid-cols-1 xl:grid-cols-2" />
+        </motion.div>
+      </div>
     </motion.section>
   );
 }
@@ -1207,6 +1320,7 @@ function DenseNetworkGraph({ patients, networkData }) {
 
   const [searchQuery, setSearchQuery] = useState("");
   const [zoomLevel, setZoomLevel] = useState(1);
+  const [layoutMode, setLayoutMode] = useState("SPIRAL");
   const tf = useRef({ zoom: 1, pan: { x: 0, y: 0 } });
   const gRef = useRef(null);
   
@@ -1215,15 +1329,36 @@ function DenseNetworkGraph({ patients, networkData }) {
 
   const idMap = useMemo(() => {
     const map = new Map();
+    const wardCounts = { 0:0, 1:0, 2:0, 3:0 };
+    
     displayNodes.forEach((patient, i) => {
-      const angle = i * 137.508 * (Math.PI / 180);
-      const r = c * Math.sqrt(i);
-      const x = CENTER_X + r * Math.cos(angle);
-      const y = CENTER_Y + r * Math.sin(angle);
+      let x, y;
+      if (layoutMode === "SPIRAL") {
+        const angle = i * 137.508 * (Math.PI / 180);
+        const r = c * Math.sqrt(i);
+        x = CENTER_X + r * Math.cos(angle);
+        y = CENTER_Y + r * Math.sin(angle);
+      } else {
+        const idNum = parseInt(patient.id, 10) || i;
+        const wardId = idNum % 4; // 4 quadrants simulating 4 wards
+        const count = wardCounts[wardId]++;
+        
+        const cols = 20; // 20 beds wide
+        const spacing = 18; 
+        const row = Math.floor(count / cols);
+        const col = count % cols;
+        
+        const wardWidth = cols * spacing;
+        const offsetX = (wardId % 2 === 0) ? -280 : 280;
+        const offsetY = (wardId < 2) ? -200 : 200;
+        
+        x = CENTER_X + offsetX - (wardWidth/2) + col * spacing;
+        y = CENTER_Y + offsetY - 100 + row * spacing;
+      }
       map.set(String(patient.id), { x, y, patient });
     });
     return map;
-  }, [displayNodes]);
+  }, [displayNodes, layoutMode]);
 
   const activeLinks = useMemo(() => {
     if (!searchQuery || !networkData?.links) return [];
@@ -1300,9 +1435,13 @@ function DenseNetworkGraph({ patients, networkData }) {
       </div>
 
       <div className="absolute top-4 right-4 z-10 flex flex-col gap-2 font-tech font-bold text-lg">
-        <button onClick={() => { tf.current.zoom = Math.min(tf.current.zoom * 1.4, 20); setZoomLevel(tf.current.zoom); updateTransform(); }} className="w-10 h-10 flex items-center justify-center bg-core-950/90 rounded-lg border border-neon-cyan/30 text-neon-cyan hover:bg-neon-cyan/20 backdrop-blur">+</button>
-        <button onClick={() => { tf.current.zoom = 1; tf.current.pan = { x: 0, y: 0 }; setZoomLevel(1); updateTransform(); }} className="w-10 h-10 flex items-center justify-center bg-core-950/90 rounded-lg border border-neon-cyan/30 text-neon-cyan hover:bg-neon-cyan/20 backdrop-blur text-sm">RST</button>
-        <button onClick={() => { tf.current.zoom = Math.max(tf.current.zoom / 1.4, 0.5); setZoomLevel(tf.current.zoom); updateTransform(); }} className="w-10 h-10 flex items-center justify-center bg-core-950/90 rounded-lg border border-neon-cyan/30 text-neon-cyan hover:bg-neon-cyan/20 backdrop-blur">-</button>
+        <div className="flex bg-core-950/90 rounded-lg border border-neon-cyan/30 backdrop-blur overflow-hidden mb-2">
+          <button onClick={() => setLayoutMode("SPIRAL")} className={`px-3 py-2 text-[10px] uppercase transition ${layoutMode === "SPIRAL" ? "bg-neon-cyan text-core-900" : "text-neon-cyan hover:bg-neon-cyan/10"}`}>Spiral</button>
+          <button onClick={() => setLayoutMode("FLOORPLAN")} className={`px-3 py-2 text-[10px] uppercase transition ${layoutMode === "FLOORPLAN" ? "bg-neon-pink text-core-900" : "text-neon-pink hover:bg-neon-pink/10"}`}>Ward</button>
+        </div>
+        <button onClick={() => { tf.current.zoom = Math.min(tf.current.zoom * 1.4, 20); setZoomLevel(tf.current.zoom); updateTransform(); }} className="w-10 h-10 flex items-center justify-center self-end bg-core-950/90 rounded-lg border border-neon-cyan/30 text-neon-cyan hover:bg-neon-cyan/20 backdrop-blur">+</button>
+        <button onClick={() => { tf.current.zoom = 1; tf.current.pan = { x: 0, y: 0 }; setZoomLevel(1); updateTransform(); }} className="w-10 h-10 flex items-center justify-center self-end bg-core-950/90 rounded-lg border border-neon-cyan/30 text-neon-cyan hover:bg-neon-cyan/20 backdrop-blur text-sm">RST</button>
+        <button onClick={() => { tf.current.zoom = Math.max(tf.current.zoom / 1.4, 0.5); setZoomLevel(tf.current.zoom); updateTransform(); }} className="w-10 h-10 flex items-center justify-center self-end bg-core-950/90 rounded-lg border border-neon-cyan/30 text-neon-cyan hover:bg-neon-cyan/20 backdrop-blur">-</button>
       </div>
 
       <div className="absolute bottom-6 w-full flex flex-col items-center z-10 pointer-events-none gap-2">
@@ -1342,13 +1481,12 @@ function DenseNetworkGraph({ patients, networkData }) {
           </defs>
           <g ref={gRef}>
             {activeLinks.map((link, i) => (
-              <line key={`link-${i}`} x1={link.sourcePos.x} y1={link.sourcePos.y} x2={link.targetPos.x} y2={link.targetPos.y} stroke="rgba(0, 240, 255, 0.6)" strokeWidth={1} strokeDasharray="3 3" className="animate-pulse" />
+              <line key={`link-${i}`} x1={link.sourcePos.x} y1={link.sourcePos.y} x2={link.targetPos.x} y2={link.targetPos.y} stroke="rgba(0, 240, 255, 0.4)" strokeWidth={1} />
             ))}
-            {displayNodes.map((patient, i) => {
-              const angle = i * 137.508 * (Math.PI / 180);
-              const r = c * Math.sqrt(i);
-              const x = CENTER_X + r * Math.cos(angle);
-              const y = CENTER_Y + r * Math.sin(angle);
+            {displayNodes.map((patient) => {
+              const pos = idMap.get(String(patient.id));
+              if (!pos) return null;
+              const { x, y } = pos;
 
               const infected = patient.infected === true || patient.infected === 1;
               const isSearching = activeNodeIds !== null;
@@ -1361,7 +1499,7 @@ function DenseNetworkGraph({ patients, networkData }) {
               const strokeWidth = isTarget ? 1.5 : 0;
 
               return (
-                <g key={patient.id} className={`transition-opacity duration-300 ${opacityClass}`}>
+                <g key={patient.id} className={opacityClass}>
                   {infected && <circle cx={x} cy={y} fill={fillClr} r={R * 2.5} className="opacity-30" />}
                   <circle cx={x} cy={y} fill={fillClr} r={R} stroke={strokeColor} strokeWidth={strokeWidth} />
                   {(isActive || showLabels) && (
@@ -1513,7 +1651,7 @@ function normalizeNetwork(payload, patients) {
   return { nodes, links };
 }
 
-function DossierModal({ patient, onClose }) {
+function DossierModal({ patient, onClose, onManualOverride, isHistorical }) {
   if (!patient) return null;
 
   const statusTone = patient.status === "CRITICAL" ? "pink" : patient.status === "MODERATE" ? "amber" : "cyan";
@@ -1595,6 +1733,21 @@ function DossierModal({ patient, onClose }) {
                 <span className="text-white font-display text-2xl font-bold">{Number(patient.severity || 0).toFixed(1)}</span>
               </div>
             </div>
+            {!isHistorical && onManualOverride && (
+              <div className="mt-8">
+                <button
+                  onClick={() => onManualOverride(patient.id)}
+                  disabled={patient.status === 'STABLE' && patient.infected === false && patient.override}
+                  className={`w-full py-4 rounded-xl font-display text-sm font-bold uppercase tracking-widest transition-all duration-300 ${
+                    patient.override
+                      ? 'bg-core-900 border-2 border-slate-700 text-slate-500 cursor-not-allowed shadow-none'
+                      : 'bg-[#0b121e] border-2 border-neon-cyan text-neon-cyan hover:bg-neon-cyan hover:text-core-950 shadow-[0_0_15px_rgba(0,240,255,0.3)]'
+                  }`}
+                >
+                  {patient.override ? 'Override Executed' : 'Execute Triage Override'}
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
