@@ -1,0 +1,116 @@
+@import url("https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=Space+Mono:wght@400;700&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-body: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-tech: "Space Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background-color: #020408;
+  color: #e2e8f0;
+  font-family: var(--font-body);
+  margin: 0;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+.font-display {
+  font-family: var(--font-display);
+  letter-spacing: -0.02em;
+}
+
+.font-tech {
+  font-family: var(--font-tech);
+}
+
+/* Backgrounds */
+.bg-deep-space {
+  background: radial-gradient(circle at 50% 0%, #0b1426, #020408 70%);
+}
+
+/* Grid overlay background */
+.grid-bg-container {
+  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 1) 0%, rgba(0, 0, 0, 0) 100%);
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.grid-bg {
+  position: absolute;
+  inset: -100px;
+  background-size: 40px 40px;
+  background-image:
+    linear-gradient(to right, rgba(0, 240, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(0, 240, 255, 0.04) 1px, transparent 1px);
+  transform: perspective(1000px) rotateX(60deg) scale(2);
+  transform-origin: top;
+  animation: gridMove 20s linear infinite;
+}
+
+@keyframes gridMove {
+  0% {
+    transform: perspective(1000px) rotateX(60deg) translateY(0) scale(2);
+  }
+
+  100% {
+    transform: perspective(1000px) rotateX(60deg) translateY(40px) scale(2);
+  }
+}
+
+.glass-panel {
+  background: linear-gradient(135deg, rgba(11, 20, 38, 0.6), rgba(5, 9, 20, 0.8));
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(0, 240, 255, 0.15);
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5), inset 0 0 20px rgba(0, 240, 255, 0.02);
+}
+
+.glass-panel-pink {
+  background: linear-gradient(135deg, rgba(38, 11, 22, 0.6), rgba(20, 5, 11, 0.8));
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 0, 102, 0.15);
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5), inset 0 0 20px rgba(255, 0, 102, 0.02);
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 6px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: rgba(0, 240, 255, 0.3);
+  border-radius: 4px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 240, 255, 0.5);
+}
+
+.glow-text-cyan {
+  text-shadow: 0 0 12px rgba(0, 240, 255, 0.7);
+}
+
+.glow-text-pink {
+  text-shadow: 0 0 12px rgba(255, 0, 102, 0.7);
+}
+
+.glow-text-amber {
+  text-shadow: 0 0 12px rgba(255, 176, 0, 0.7);
+}
+
+.glow-text-green {
+  text-shadow: 0 0 12px rgba(57, 255, 20, 0.7);
+}
